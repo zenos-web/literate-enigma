@@ -1033,6 +1033,21 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
         let plan = planDisplay(for: targetScreen)
         return CGFloat(plan.height) / CGFloat(plan.width)
     }
+    /// 仪表地址和手机当前 Wi-Fi 不在同一 /24 时，iOS 会直接给出「无路由到主机」（errno 65）。
+    /// 这里按本机网段推断仪表的常见地址（网关 .1）并改写输入框，同时把判断写进日志。
+    private func instrumentAddress(_ field: UITextField, label: String) -> String {
+        let raw = (field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let remote = raw.split(separator: ".")
+        guard remote.count == 4,
+              let local = ReceiverConfiguration.localIPv4Addresses().first else { return raw }
+        let mine = local.split(separator: ".")
+        guard mine.count == 4 else { return raw }
+        if remote[0] == mine[0], remote[1] == mine[1], remote[2] == mine[2] { return raw }
+        let guess = "\(mine[0]).\(mine[1]).\(mine[2]).1"
+        log("\(label)地址 \(raw) 与本机 Wi-Fi \(local) 不同网段，已自动改用 \(guess)")
+        field.text = guess
+        return guess
+    }
     private func configureDisplay(_ config: inout ReceiverConfiguration) {
         let screen = targetScreen
         let plan = planDisplay(for: screen)
@@ -1052,10 +1067,10 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
         config.browserAudio = soundOutput == .browser && config.videoOutputPort != nil
         if outputMode == .airPlay, config.videoOutputPort != nil { config.airPlayStreamID = UUID() }
         if outputMode == .zeeho {
-            config.zeehoAddress = (zeehoAddressField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            config.zeehoAddress = instrumentAddress(zeehoAddressField, label: "极核仪表")
         }
         if outputMode == .ninebot {
-            config.ninebotAddress = (ninebotAddressField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            config.ninebotAddress = instrumentAddress(ninebotAddressField, label: "九号仪表")
         }
         if outputMode.usesInstrumentWiFi {
             let screen = view.window?.screen ?? UIScreen.main
@@ -1073,7 +1088,7 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
                 width: Int(screen.bounds.width * screen.scale), height: Int(screen.bounds.height * screen.scale), rotation: rotation)
         }
         if outputMode == .tailing {
-            config.tailingAddress = (tailingAddressField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            config.tailingAddress = instrumentAddress(tailingAddressField, label: "台铃仪表")
 
         }
         config.carLifeEnabled = outputMode == .carLife

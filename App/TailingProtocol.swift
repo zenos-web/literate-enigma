@@ -119,7 +119,22 @@ enum TailingError: LocalizedError {
         case .timeout(let text): return "台铃等待超时：\(text)"
         case .closed: return "台铃会话已关闭"
         case .channel(let name, let error): return "\(name)：\(error.localizedDescription)"
-        case .system(let text, let code): return "台铃\(text)失败（\(code)）"
+        case .system(let text, let code): return "台铃\(text)失败（\(code)\(TailingError.reason(code) == nil ? "" : " \(TailingError.reason(code)!)")）"
+        }
+    }
+
+    /// 把常见的 socket errno 翻成人话，省得只看到一个数字。
+    static func reason(_ code: Int32) -> String? {
+        switch code {
+        case 61: return "连接被拒绝，仪表这个端口没在监听"
+        case 65: return "无路由到主机，和仪表不在同一网段或路由被 VPN 接管"
+        case 51: return "网络不可达，检查是否连的是仪表热点"
+        case 60: return "连接超时"
+        case 49: return "本机地址不可用，Wi-Fi 刚切换过"
+        case 64: return "主机已下线"
+        case 56: return "连接被仪表重置"
+        case 9: return "描述符无效，会话已关闭"
+        default: return nil
         }
     }
 }

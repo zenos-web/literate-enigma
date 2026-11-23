@@ -53,7 +53,9 @@ final class ZeehoOutput {
         private var parameters = VideoParameterSets(codec: .h264)
         private var waitingForIDR = true
         private var latest: CVPixelBuffer?
-        private lazy var compositor = CIContext(options: [.useSoftwareRenderer: true, .cacheIntermediates: false])
+        // 缩放走 GPU（Metal）。原先强制软件渲染，缩放到 1024×480 时单帧要几十毫秒，
+        // 本机同时播音频时会直接饿死编码循环，仪表画面就停住不动。
+        private lazy var compositor = CIContext(options: [.cacheIntermediates: false])
         private var fresh = false
         private let origin = ProcessInfo.processInfo.systemUptime
         private var lastFrame = -Double.infinity
@@ -95,7 +97,10 @@ final class ZeehoOutput {
                         guard active else { break }
                         let result = queue.sync { () -> H264EncodedFrame? in
                             guard active, let image = latest else { return nil }
-                            return encode(image, at: ProcessInfo.processInfo.systemUptime, forceKeyframe: first)
+                            // 首帧之外每 2 秒也强制一个 IDR：仪表解码器一旦错过关键帧，
+                            // 光靠 P 帧永远追不回来，表现就是画面定格在某一帧。
+                            return encode(image, at: ProcessInfo.processInfo.systemUptime,
+                                          forceKeyframe: first || ProcessInfo.processInfo.systemUptime - lastKeyframe >= 2)
                         }
                         guard let result else {
                             // Preserve the pending pull request until an encodable frame is available.

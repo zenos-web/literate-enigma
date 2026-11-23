@@ -81,9 +81,28 @@ final class TailingConnection: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async { [self] in accept(server, port: port) }
         }
         log("\(dashboard) TCP 已监听 \(localIP):\(ports.control)/\(ports.auxiliary)/\(ports.video)，正在协商")
-        let announcement = try tracked(TailingSocket.create())
+        // 注册通道（10930）由 App 主动连仪表。仪表刚打开投屏时服务起得慢，
+        // 或者旧会话还占着这个端口，一次失败就放弃太脆，这里重试三次。
+        var announcementSocket: TailingSocket?
+        var announcementError: Error?
+        for attempt in 1...3 {
+            let socket = try tracked(TailingSocket.create())
+            do {
+                try socket.connect(localIP: localIP, remoteIP: targetIP, port: ports.announcement, timeout: 4)
+                announcementSocket = socket
+                if attempt > 1 { log("\(dashboard) 注册通道 TCP\(ports.announcement) 第 \(attempt) 次连上") }
+                break
+            } catch {
+                announcementError = error
+                socket.close()
+                log("\(dashboard) 注册通道 TCP\(ports.announcement) 第 \(attempt) 次失败：\(error.localizedDescription)")
+                if attempt < 3 { Thread.sleep(forTimeInterval: 0.8) }
+            }
+        }
+        guard let announcement = announcementSocket else {
+            throw announcementError ?? TailingError.timeout("注册通道未建立")
+        }
         defer { announcement.close() }
-        try announcement.connect(localIP: localIP, remoteIP: targetIP, port: ports.announcement)
         try announcement.write(TailingProtocol.control(0x70000010, payload: TailingProtocol.json([
             "phoneType": "iOS", "packageName": phone.package
         ])))

@@ -53,6 +53,9 @@ final class NativeReceiver {
     var onNinebotState: ((String) -> Void)?
     private let tailing = TailingOutput()
     var onTailingState: ((String) -> Void)?
+    /// 仪表实际收到多少帧，用来区分「帧没送到仪表」和「送到了但仪表不刷新」。
+    private var instrumentFrames: [String: Int] = [:]
+    private var instrumentWindow = ProcessInfo.processInfo.systemUptime
     private lazy var carLink = CarLinkRelay(queue: queue)
     var onCarLifeState: ((String) -> Void)?
     var onCarLinkState: ((String) -> Void)?
@@ -305,6 +308,20 @@ final class NativeReceiver {
             self.sendKeyFrameRequest()
         }
     }
+    /// 每 3 秒报一次各仪表的实际送帧速率。速率接近 0 说明帧没送到仪表；
+    /// 速率正常但画面不动，则问题在仪表侧解码/刷新。
+    private func countInstrumentFrame(_ name: String) {
+        instrumentFrames[name, default: 0] += 1
+        let now = ProcessInfo.processInfo.systemUptime
+        let span = now - instrumentWindow
+        guard span >= 3 else { return }
+        let summary = instrumentFrames.sorted { $0.key < $1.key }
+            .map { "\($0.key)\(Int((Double($0.value) / span).rounded()))" }
+            .joined(separator: " · ")
+        log("仪表送帧速率：\(summary.isEmpty ? "无" : summary) 帧/秒")
+        instrumentFrames.removeAll()
+        instrumentWindow = now
+    }
     private func keyframeArrived() {
         guard let since = keyframeWantedSince else { return }
         keyframeWantedSince = nil
@@ -415,9 +432,9 @@ final class NativeReceiver {
                     let keyframe = Self.containsRandomAccess(data, codec: codec)
                     if keyframe { self.keyframeArrived() }
                     self.videoOutput.append(data, codec: codec)
-                    if configuration.zeehoAddress != nil { self.zeeho.append(data, codec: codec, keyframe: keyframe) }
-                    if configuration.ninebotAddress != nil { self.ninebot.append(data, codec: codec, keyframe: keyframe) }
-                    if configuration.tailingAddress != nil { self.tailing.append(data, codec: codec) }
+                    if configuration.zeehoAddress != nil { self.zeeho.append(data, codec: codec, keyframe: keyframe); self.countInstrumentFrame("极核") }
+                    if configuration.ninebotAddress != nil { self.ninebot.append(data, codec: codec, keyframe: keyframe); self.countInstrumentFrame("九号") }
+                    if configuration.tailingAddress != nil { self.tailing.append(data, codec: codec); self.countInstrumentFrame("台铃") }
                     if configuration.carLifeEnabled { self.carLife.append(data, codec: codec) }
                     if configuration.carLinkRelayAddress != nil { self.carLink.append(data, codec: codec) }
                     if self.localSkipping {

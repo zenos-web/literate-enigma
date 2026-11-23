@@ -56,7 +56,8 @@ final class NinebotOutput {
         private var parameters = VideoParameterSets(codec: .h264)
         private var waitingForIDR = true
         private var latest: CVPixelBuffer?
-        private lazy var compositor = CIContext(options: [.useSoftwareRenderer: true, .cacheIntermediates: false])
+        // 缩放走 GPU（Metal），避免软件渲染在播音频时把编码循环拖死。
+        private lazy var compositor = CIContext(options: [.cacheIntermediates: false])
         private var fresh = false
         private let origin = ProcessInfo.processInfo.systemUptime
         private var lastFrame = -Double.infinity
