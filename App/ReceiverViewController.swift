@@ -83,6 +83,8 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
     private let orientationControl = ChoiceMenu(items: ["横屏", "竖屏"])
     private let wifiPathMonitor = NWPathMonitor(requiredInterfaceType: .wifi)
     private var networkStartupTask: Task<Void, Never>?
+    /// 全程看护 Wi-Fi：CarPlay 无线握手会让 iOS 重配无线接口，掉线后据此自动恢复。
+    private var networkWatchdog: Task<Void, Never>?
     private var waitingForNetwork = false
     private var networkRestartCount = 0
     private var localStartupID: UUID?
@@ -1480,6 +1482,8 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
             prepareExternalOutput(configuration: config)
             receiver.start(configuration: config, identity: identity, preferredViewer: primaryViewer)
             watchStartupAddress(address)
+            startNetworkWatchdog()
+            verifyPresetMatchesCurrentWiFi(config.ssid, channel: config.wifiChannel)
             return
         }
         guard let identity else { return }
@@ -1550,6 +1554,67 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
         }
     }
 
+    /// 启动打印预设与当前网络是否一致；不一致时 iOS 会在会话开始后按预设去切换 Wi-Fi。
+    private func verifyPresetMatchesCurrentWiFi(_ presetSSID: String, channel: UInt8) {
+        guard !presetSSID.isEmpty else { return }
+        NEHotspotNetwork.fetchCurrent { [weak self] network in
+            DispatchQueue.main.async {
+                guard let self, self.running else { return }
+                let current = network?.ssid ?? "（未读到）"
+                self.log("CarPlay 配件 Wi-Fi 预设：\(presetSSID)（信道 \(channel)）；iPhone 当前网络：\(current)")
+                if let current = network?.ssid, current != presetSSID {
+                    self.log("注意：预设和当前网络不一致，iOS 会按预设切换 Wi-Fi，这时 Wi-Fi 被断开是预期行为")
+                }
+            }
+        }
+    }
+
+    /// 会话期间持续看护 Wi-Fi 地址。CarPlay 无线握手会让 iOS 重配无线接口，
+    /// 掉线后等网络回来就自动重建会话，而不是让画面停在原地。
+    private func startNetworkWatchdog() {
+        networkWatchdog?.cancel()
+        networkWatchdog = Task { [weak self] in
+            guard let self else { return }
+            var lastAddress = self.localCarPlayAddress
+            var missing = 0
+            var reportedMissing = false
+            while true {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, self.running else { return }
+                let address = self.localCarPlayAddress
+                self.refreshNetworkAddresses()
+                if address == nil {
+                    missing += 1
+                    if missing == 3, !reportedMissing {
+                        reportedMissing = true
+                        self.log("Wi-Fi 已断开（CarPlay 接管无线接口或系统切换了网络），正在等待恢复")
+                        self.statusLabel.text = "Wi-Fi 已断开，等待网络恢复…"
+                    }
+                    continue
+                }
+                if reportedMissing {
+                    guard self.networkRestartCount < 2 else {
+                        self.log("Wi-Fi 反复掉线，已停止自动重启"); return
+                    }
+                    self.networkRestartCount += 1
+                    self.log("Wi-Fi 已恢复：\(address ?? "")，重新建立 CarPlay 会话")
+                    self.restartCarPlay(reason: "Wi-Fi 恢复")
+                    return
+                }
+                if let address, address != lastAddress {
+                    guard self.networkRestartCount < 2 else {
+                        self.log("Wi-Fi 地址反复变化，已停止自动重启"); return
+                    }
+                    self.networkRestartCount += 1
+                    self.log("Wi-Fi 地址变化 \(lastAddress ?? "无") → \(address)，重新建立 CarPlay 会话")
+                    lastAddress = address
+                    self.restartCarPlay(reason: "Wi-Fi 地址变化")
+                    return
+                }
+            }
+        }
+    }
+
     private func watchStartupAddress(_ initialAddress: String) {
         networkStartupTask?.cancel()
         networkStartupTask = Task { [weak self] in
@@ -1581,6 +1646,8 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
         localStartupID = nil
         networkStartupTask?.cancel()
         networkStartupTask = nil
+        networkWatchdog?.cancel()
+        networkWatchdog = nil
         waitingForNetwork = false
         clearStartupHint()
         airPlayReady = false
@@ -2467,7 +2534,7 @@ extension ReceiverViewController {
             ]
             var sections: [SettingsSection] = []
             if !current.isEmpty { sections.append(SettingsSection(current)) }
-            sections.append(SettingsSection(footer: editingLockedFooter ?? "返回自动保存。同名网络会更新原预设，兼容信道通常保持 36。", fields))
+            sections.append(SettingsSection(footer: editingLockedFooter ?? "返回自动保存。同名网络会更新原预设。「兼容信道」要和仪表热点的实际信道一致（2.4G 常见 1/6/11，5G 常见 36/44/149）；填错的话 iOS 启动 CarPlay 时会切信道去重连，表现就是 Wi-Fi 被断开。", fields))
             if editable, passwordStatus.text?.isEmpty == false { sections.append(SettingsSection([.note(passwordStatus)])) }
             return sections
         }
