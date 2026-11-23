@@ -1,0 +1,39 @@
+# Local authentication, credentials and personal configuration
+.local/
+mfi/
+offline-mfi/
+IdentityImport/
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.pk8
+*.p7b
+*.cer
+*.pem
+*.key
+*.x963
+*.mobileprovision
+*.provisionprofile
+# Build output and caches
+.build/
+.build-cache/
+.swiftpm/
+build/
+build-*/
+DerivedData/
+*.app/
+*.ipa
+*.xcarchive/
+*.dSYM/
+*.log
+__pycache__/
+*.pyc
+# Xcode / macOS user state
+**/xcuserdata/
+*.xcuserstate
+.DS_Store
+# Local analysis artifacts
+analysis/
+reference/

@@ -1,0 +1,56 @@
+MFiSAP.swift and Pairing.swift adapt the accessory authentication message layout and cryptographic
+construction from PlayPort's MfiSapAuthSetup.kt, PairVerify.kt and ControlCipher.kt, originating in DiPlay/xcertplay:
+https://github.com/youcci/playport
+https://github.com/shihabal3amri/DiPlay
+https://github.com/shilapi/xcertplay
+Those projects are licensed GPL-3.0. The adapted GPL-3.0-or-later
+components retain their original terms; see LICENSES/GPL-3.0.txt.
+
+No JVM server, browser viewer or Android code is part of this native app target.
+
+Locally imported accessory credentials are not covered by this source license.
+They are kept in .local, excluded from source control, and included only in local
+builds. No claim of Apple certification or credential redistribution rights is made.
+
+BigInt v5.4.0, commit 88071df9f27361b52d92f9acea85e8b658af8183
+https://github.com/attaswift/BigInt
+Unmodified Swift sources vendored under Sources/TDSCarKitCore/Vendor/BigInt.
+MIT license preserved in ThirdParty/BigInt-LICENSE.md.
+PairSetup.swift adapts PlayPort PairSetup.kt and Srp6a.kt under GPL-3.0-or-later.
+
+ScreenStream.swift, CarPlayMediaSession.swift, CarPlayInfo.swift and MediaTiming
+adapt PlayPort screen, event, clock, capability and HID layouts under GPL-3.0-or-later.
+
+AudioStream.swift and CarPlayAudio.swift adapt PlayPort AudioStream/PCM wire
+formats under GPL-3.0-or-later; playback uses native AVFoundation.
+
+App/CarLifeOutput.swift is a Swift port of OpenXPlay-Stream kotlin/carlife
+(CarlifeFraming, Proto, CarlifeCrypto, CarlifeInput, CarlifeSession, CarlifeOutput, ReceiverProfile),
+Copyright 2026 OpenXPlay.org, licensed AGPL-3.0-only:
+https://github.com/OpenXPlay/OpenXPlay-Stream
+That file stays under AGPL-3.0-only. GPLv3 section 13 permits combining it with this
+GPL-3.0-or-later code, but an app that includes it must meet AGPL-3.0 as a whole, including
+offering the Corresponding Source to users who interact with it over a network (for example
+the browser receiver page). Building without CarLifeOutput.swift removes that requirement.
+
+CarLink relay output interoperates with OpenXPlay-Stream's OXP-Wire v0 protocol.
+The separate oxp-clink executable is from OpenXPlay-Stream, copyright 2026 OpenXPlay.org,
+licensed AGPL-3.0-only. It is not bundled into the iOS app.
+https://github.com/OpenXPlay/OpenXPlay-Stream
+
+App/TailingProtocol.swift, TailingSocket.swift, TailingIdentity.swift,
+TailingConnection.swift and TailingH264Decoder.swift adapt xmz28's Ninebot Pro iOS
+implementation (NinebotPro/Networking/Tailing*.swift and Media/H264Decoder.swift).
+The protocol and media smoke tests adapt that project's tests/TailingTests.swift.
+CarWithin generates its own persistent RSA identity; no Ninebot Pro identity is copied.
+TailingOutput's bounded JPEG encoding and delivery diagnostics adapt Ninebot Pro's
+Media/FrameCompositor.swift and Networking/MirrorSession.swift.
+
+App/NinebotProtocol.swift, NinebotUDPSocket.swift and NinebotH264Encoder.swift
+adapt xmz28's Ninebot Pro iOS H.264 packetizer, UDP socket and VideoToolbox encoder.
+
+ZeehoOutput and the PXC H.264 session adapt xmz28 Ninebot Pro iOS
+Networking/TailingConnection.swift, TailingProtocol.swift and Media/H264Encoder.swift.
+
+The complete combined distribution includes AGPL-3.0-only code and is distributed
+under AGPL-3.0-only. Components retain the licenses noted above.
