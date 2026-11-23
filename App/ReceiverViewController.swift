@@ -53,9 +53,12 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
     }()
     private var receivesAudioFromAnotherDevice: Bool { modeControl.selectedSegmentIndex == 0 }
     private var soundOutput: SoundOutput {
-        if outputMode == .carLife || outputMode == .airPlay || outputMode.usesInstrumentWiFi { return .phone }
+        // CarLife and AirPlay carry audio on their own link, so they stay on the iPhone.
+        if outputMode == .carLife || outputMode == .airPlay { return .phone }
         if selectedSoundOutput == .carWithin && !receivesAudioFromAnotherDevice { return .phone }
-        if selectedSoundOutput == .browser && !videoOutputSwitch.isOn { return .phone }
+        // Instrument outputs have no audio channel of their own; selecting Wi-Fi audio turns on
+        // the LAN receiver without needing the browser-page switch.
+        if selectedSoundOutput == .browser && !videoOutputSwitch.isOn && !outputMode.usesInstrumentWiFi { return .phone }
         return selectedSoundOutput
     }
     private let videoOutputSwitch = UISwitch()
@@ -997,8 +1000,12 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
         if !running { updateTailingStatus("等待启动 CarPlay · 仪表 IP：\(tailingAddressField.text ?? "192.168.1.1")") }
         carLifeCard.isHidden = !showsLocalOutput || outputMode != .carLife
         airPlayCard.isHidden = !showsLocalOutput || outputMode != .airPlay
-        browserCard.isHidden = outputMode != .browser || !videoOutputSwitch.isOn
-        guard outputMode == .browser, videoOutputSwitch.isOn else { return }
+        // 仪表输出选 Wi-Fi 伴音时，同样要显示接收页地址，方便在另一台设备上打开页面听声音。
+        let showsBrowserCard = outputMode == .browser
+            ? videoOutputSwitch.isOn
+            : (outputMode.usesInstrumentWiFi && selectedSoundOutput == .browser)
+        browserCard.isHidden = !showsBrowserCard
+        guard showsBrowserCard else { return }
         refreshBrowserAddressLabels()
         secureBrowserDisclosure.configuration?.image = UIImage(systemName: httpsExpanded ? "chevron.up" : "chevron.down")
         secureBrowserDisclosure.accessibilityValue = httpsExpanded ? "已展开" : "已折叠"
@@ -1042,7 +1049,7 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
         let source = outputMode != .browser ? headUnitOutput.selectedTitle
             : followsCarScreen ? (screen.map { "车机屏幕 \($0.title)" } ?? "尚无车机屏幕，用固定分辨率") : "固定尺寸"
         log("画面计划：\(plan.width)×\(plan.height) @ \(plan.fps) FPS \(plan.codec.displayName)（\(source)\(lightLevel > 0 ? "，减轻档 \(lightLevel)" : "")）")
-        config.browserAudio = soundOutput == .browser && config.videoOutputPort != nil && outputMode == .browser
+        config.browserAudio = soundOutput == .browser && config.videoOutputPort != nil
         if outputMode == .airPlay, config.videoOutputPort != nil { config.airPlayStreamID = UUID() }
         if outputMode == .zeeho {
             config.zeehoAddress = (zeehoAddressField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1376,7 +1383,8 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
         }
         let outputPort: UInt16?
         let httpsPort: UInt16?
-        if outputMode == .browser && videoOutputSwitch.isOn {
+        if (outputMode == .browser && videoOutputSwitch.isOn)
+            || (outputMode.usesInstrumentWiFi && selectedSoundOutput == .browser) {
             if let error = browserPortError {
                 statusLabel.text = error
                 revealSettings(output: true)
@@ -1424,7 +1432,7 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
             guard let identity else { return }
             guard let address = localCarPlayAddress else { waitForLocalNetwork(); return }
             var config = ReceiverConfiguration(name: nameField.text ?? "CarWithin", address: address,
-                ssid: ssidField.text ?? "", password: password, wifiChannel: channel, audioEnabled: soundOutput != .phone || outputMode == .zeeho,
+                ssid: ssidField.text ?? "", password: password, wifiChannel: channel, audioEnabled: true,
                 videoOutputPort: outputPort, secureVideoOutputPort: httpsPort,
                 deviceID: ReceiverConfiguration.persistentDeviceID())
             if !restartingAutomatically { autoRestarts = 0; lightLevel = 0; reportedScreen = nil; primaryViewer = nil }
@@ -1463,7 +1471,7 @@ final class ReceiverViewController: UIViewController, CLLocationManagerDelegate 
         let addresses = ReceiverConfiguration.localIPv4Addresses()
         if !addresses.contains(ipField.text ?? "") { ipField.text = browserAddress ?? addresses.first }
         var config = ReceiverConfiguration(name: nameField.text ?? "CarWithin", address: ipField.text ?? "",
-            ssid: ssidField.text ?? "", password: password, wifiChannel: channel, audioEnabled: soundOutput != .phone || outputMode == .zeeho,
+            ssid: ssidField.text ?? "", password: password, wifiChannel: channel, audioEnabled: true,
             videoOutputPort: outputPort, secureVideoOutputPort: httpsPort,
             deviceID: ReceiverConfiguration.persistentDeviceID())
         configureDisplay(&config)
@@ -2300,7 +2308,7 @@ extension ReceiverViewController {
 
     fileprivate func soundPage() -> SettingsPageController {
         page("声音") { [unowned self] in
-            guard outputMode == .browser else {
+            guard outputMode == .browser || outputMode.usesInstrumentWiFi else {
                 let phone = SoundOutput.phone
                 return [SettingsSection(footer: phone.explanation, [.info("声音输出", "由 iPhone 输出")])]
             }
@@ -2308,7 +2316,7 @@ extension ReceiverViewController {
                 switch output {
                 case .carWithin: return receivesAudioFromAnotherDevice
                 case .phone: return true
-                case .browser: return videoOutputSwitch.isOn
+                case .browser: return videoOutputSwitch.isOn || outputMode.usesInstrumentWiFi
                 }
             }
             let rows = choices.map { output in
@@ -2325,9 +2333,14 @@ extension ReceiverViewController {
                 row.checked = { [unowned self] in self.soundOutput == output }
                 return row
             }
-            let footer = videoOutputSwitch.isOn
-                ? "更改在下次启动 CarPlay 时生效。使用 Wi-Fi 伴音时，通话和 Siri 留在 iPhone。"
-                : "打开局域网接收页后可使用 Wi-Fi 伴音。更改在下次启动 CarPlay 时生效。"
+            let footer: String
+            if outputMode.usesInstrumentWiFi {
+                footer = "仪表只收画面，没有声音通道。选「随画面传输（Wi-Fi）」会在局域网接收页播放伴音，仪表照常出画；更改在下次启动时生效。"
+            } else if videoOutputSwitch.isOn {
+                footer = "更改在下次启动 CarPlay 时生效。使用 Wi-Fi 伴音时，通话和 Siri 留在 iPhone。"
+            } else {
+                footer = "打开局域网接收页后可使用 Wi-Fi 伴音。更改在下次启动 CarPlay 时生效。"
+            }
             return [SettingsSection(footer: footer, rows)]
         }
     }
@@ -2515,12 +2528,12 @@ extension ReceiverViewController {
             case .airPlay: return airPlayOutputSections()
             case .tailing: return tailingOutputSections()
             case .zeeho:
-                return [SettingsSection("极核 AE4 MAX2+ 6.2 寸", footer: "让 iPhone 加入仪表 Wi-Fi，选择同名预设。结束其他投屏，打开仪表投屏后启动 CarPlay。声音由 iPhone 或蓝牙输出。", [
+                return [SettingsSection("极核 AE4 MAX2+ 6.2 寸", footer: "让 iPhone 加入仪表 Wi-Fi，选择同名预设。结束其他投屏，打开仪表投屏后启动 CarPlay。声音默认由 iPhone 或蓝牙输出，也可在「声音」里选「随画面传输（Wi-Fi）」。", [
                     .field("仪表 IP 地址", zeehoAddressField, placeholder: "192.168.0.1"),
                     .note(zeehoStatus)
                 ])]
             case .ninebot:
-                return [SettingsSection("九号 5 寸", footer: "iPhone 加入仪表 Wi-Fi 后，选择对应的 Wi-Fi 预设。先结束其他投屏，再打开仪表的投屏功能。声音由 iPhone 或蓝牙输出，触控在手机上操作。", [
+                return [SettingsSection("九号 5 寸", footer: "iPhone 加入仪表 Wi-Fi 后，选择对应的 Wi-Fi 预设。先结束其他投屏，再打开仪表的投屏功能。声音默认由 iPhone 或蓝牙输出，也可选「随画面传输（Wi-Fi）」；触控在手机上操作。", [
                     .field("仪表 IP 地址", ninebotAddressField, placeholder: "192.168.1.1"),
                     .note(ninebotStatus)
                 ])]
@@ -2611,7 +2624,7 @@ extension ReceiverViewController {
             SettingsSection("台铃 4.3 寸", footer: "适用于 TL-DASH-V2 仪表。iPhone 加入仪表 Wi-Fi，在「Wi-Fi 与网络」填写该网络信息；开启仪表投屏后启动 CarPlay。请先退出其他投屏 App。", [
                 .field("仪表 IP 地址", tailingAddressField, placeholder: "192.168.1.1")
             ]),
-            SettingsSection(footer: "仪表输出固定为 480×272、JPEG，最高 20 FPS。本机 CarPlay 使用 H.264、960×544、30 FPS。声音由 iPhone／蓝牙输出；仪表不回传触控。", [.note(tailingStatus)])
+            SettingsSection(footer: "仪表输出固定为 480×272、JPEG，最高 20 FPS。本机 CarPlay 使用 H.264、960×544、30 FPS。声音默认由 iPhone／蓝牙输出，也可选 Wi-Fi 伴音；仪表不回传触控。", [.note(tailingStatus)])
         ]
     }
 
