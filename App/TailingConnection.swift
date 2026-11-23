@@ -57,6 +57,14 @@ final class TailingConnection: @unchecked Sendable {
     private var sentH264Prefix = false
     private var mediaStarted = false
     private var configured = false
+    private var mediaWidth: Int?
+    private var mediaHeight: Int?
+    /// 仪表在 10711 通道上报的面板尺寸，协商完成后可用。
+    var mediaSize: (width: Int, height: Int)? {
+        condition.lock(); defer { condition.unlock() }
+        guard let width = mediaWidth, let height = mediaHeight else { return nil }
+        return (width, height)
+    }
     private var isZeeho: Bool { profile.isZeeho }
     private var dashboard: String { profile.isZeeho ? "极核" : "台铃" }
 
@@ -396,11 +404,15 @@ final class TailingConnection: @unchecked Sendable {
                 }
                 let width = request.payload.uint16LE(0)
                 let height = request.payload.uint16LE(2)
-                let validDimensions = isZeeho ? width == 1024 && (height == 480 || height == 488)
+                // 仪表报多少就按多少走：极核 6.2 寸面板既有 1024×480，也有 1024×600 的版本，
+                // 以前写死只认 1024×480/488，尺寸对不上就整场连接失败。
+                let validDimensions = isZeeho
+                    ? width >= 480 && width <= 1280 && height >= 240 && height <= 800
                     : width == 480 && height == 272
                 guard validDimensions else {
                     throw TailingError.protocolFailure("仪表媒体尺寸 \(width)×\(height) 与 \(dashboard) 配置不符")
                 }
+                condition.lock(); mediaWidth = Int(width); mediaHeight = Int(height); condition.unlock()
                 let deadline = Date().addingTimeInterval(5)
                 condition.lock()
                 while signedHUID == nil && !closed {
@@ -413,11 +425,12 @@ final class TailingConnection: @unchecked Sendable {
                       echoed == signature else { throw TailingError.protocolFailure("媒体身份回显不匹配") }
                 try identity.verify(echoed, huid: huid)
                 payload.appendLE(UInt32(isZeeho ? 2 : 1))
-                payload.appendLE(UInt16(profile.width))
-                payload.appendLE(UInt16(profile.height))
+                // 回给仪表的尺寸必须和它自己报的一致，否则它会按面板尺寸等帧而画面错位/不刷新。
+                payload.appendLE(UInt16(width))
+                payload.appendLE(UInt16(height))
                 response = 0x11
                 condition.lock(); configured = true; condition.unlock()
-                log("媒体身份回显校验通过，仪表报告 \(width)×\(height)，回应 \(isZeeho ? "H.264" : "JPEG") / \(profile.width)×\(profile.height)")
+                log("媒体身份回显校验通过，仪表报告 \(width)×\(height)，回应 \(isZeeho ? "H.264" : "JPEG") / \(width)×\(height)")
             case 0x70:
                 condition.lock(); let ready = configured; condition.unlock()
                 guard ready else { throw TailingError.protocolFailure("仪表在配置完成前请求媒体启动") }

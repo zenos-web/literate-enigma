@@ -66,6 +66,9 @@ final class ZeehoOutput {
         private var lastReply: Double?
         private var sentPicture = false
         private var status = ""
+        /// 极核面板尺寸以仪表在 10711 通道上报的为准。
+        private var outputWidth = ZeehoOutput.width
+        private var outputHeight = ZeehoOutput.height
 
         init(queue: DispatchQueue, localAddress: String, targetAddress: String, phone: TailingPhoneInfo, onState: @escaping (String) -> Void, onLog: @escaping (String) -> Void,
              requestKeyframe: @escaping () -> Void) {
@@ -82,6 +85,11 @@ final class ZeehoOutput {
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 do {
                     try connection.start()
+                    if let size = connection.mediaSize {
+                        outputWidth = size.width
+                        outputHeight = size.height
+                        onLog("极核面板报告 \(size.width)×\(size.height)，按该尺寸编码")
+                    }
                     guard active else { return }
                     report("仪表已连接，等待 CarPlay 画面…")
                     var first = true
@@ -115,12 +123,12 @@ final class ZeehoOutput {
                             guard let recovered else { throw TailingError.timeout("等待 H.264 编码画面") }
                             try connection.sendH264(recovered.data)
                             first = false
-                            report("正在投屏 · 1024×480 · H.264")
+                            report("正在投屏 · \(outputWidth)×\(outputHeight) · H.264")
                             continue
                         }
                         try connection.sendH264(result.data)
                         first = false
-                        report("正在投屏 · 1024×480 · H.264")
+                        report("正在投屏 · \(outputWidth)×\(outputHeight) · H.264")
                     }
                 } catch {
                     if active {
@@ -209,7 +217,7 @@ final class ZeehoOutput {
             do {
                 if encoder == nil {
                     guard now - lastCodecFailure >= 0.5 else { return nil }
-                    encoder = try H264Encoder(width: ZeehoOutput.width, height: ZeehoOutput.height,
+                    encoder = try H264Encoder(width: outputWidth, height: outputHeight,
                                               fps: ZeehoOutput.fps, bitrate: 2_500_000) { [weak self] result in
                         guard let self else { return }
                         self.lock.withLock { self.encoded = result }
@@ -240,7 +248,7 @@ final class ZeehoOutput {
         }
 
         private func fittedImage(_ image: CVPixelBuffer) throws -> CVPixelBuffer {
-            let width = ZeehoOutput.width, height = ZeehoOutput.height
+            let width = outputWidth, height = outputHeight
             if CVPixelBufferGetWidth(image) == width, CVPixelBufferGetHeight(image) == height { return image }
             var buffer: CVPixelBuffer?
             let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
