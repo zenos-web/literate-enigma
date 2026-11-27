@@ -16,7 +16,7 @@ enum TailingProtocol {
     }
 
     static func control(_ command: UInt32, identifier: UInt32 = 0, payload: Data = Data()) throws -> Data {
-        guard payload.count <= 65_536 - 16 else { throw TailingError.protocolFailure("控制帧过长") }
+        guard payload.count <= 65_536 - 16 else { throw TailingError.protocolFailure(CWL("控制帧过长")) }
         let size = UInt32(16 + payload.count)
         var data = Data()
         for value in [command, size, command ^ size, identifier] { data.appendLE(value) }
@@ -26,19 +26,31 @@ enum TailingProtocol {
 
     static func readControl(_ read: (Int) throws -> Data) throws -> Control {
         let head = try read(16)
-        guard head.count == 16 else { throw TailingError.protocolFailure("控制头截断") }
+        guard head.count == 16 else { throw TailingError.protocolFailure(CWL("控制头截断")) }
         let command = head.uint32LE(0), length = Int(head.uint32LE(4))
         guard (16...65_536).contains(length), head.uint32LE(8) == command ^ UInt32(length) else {
-            throw TailingError.protocolFailure("控制帧长度或异或校验错误")
+            throw TailingError.protocolFailure(CWL("控制帧长度或异或校验错误"))
         }
         // iOS 样本第 4 字段存在非零值；保存并在回复时回显，不将其强制视为零。
         let payload = try read(length - 16)
-        guard payload.count == length - 16 else { throw TailingError.protocolFailure("控制载荷截断") }
+        guard payload.count == length - 16 else { throw TailingError.protocolFailure(CWL("控制载荷截断")) }
         return Control(command: command, identifier: head.uint32LE(12), payload: payload)
     }
 
+    /// MotoPlay waits for an empty, identifier-preserving ack for these notifications.
+    /// Commands that require a response body retain their dedicated handlers.
+    static func zeehoExtensionReply(to request: Control, profile: TailingDisplayProfile) throws -> Data? {
+        guard profile == .zeehoSEPlus else { return nil }
+        switch request.command {
+        case 0x103b0, 0x103a0, 0x10470, 0x104a0, 0x10020:
+            return try control(request.command + 1, identifier: request.identifier)
+        default:
+            return nil
+        }
+    }
+
     static func auxiliary(_ command: UInt16, token: UInt32 = 0, payload: Data = Data()) throws -> Data {
-        guard payload.count <= 8_192 else { throw TailingError.protocolFailure("媒体控制帧过长") }
+        guard payload.count <= 8_192 else { throw TailingError.protocolFailure(CWL("媒体控制帧过长")) }
         var data = Data()
         data.appendLE(command); data.appendLE(UInt16(payload.count)); data.appendLE(token)
         data.append(payload)
@@ -47,18 +59,26 @@ enum TailingProtocol {
 
     static func readAuxiliary(_ read: (Int) throws -> Data) throws -> Auxiliary {
         let head = try read(8)
-        guard head.count == 8 else { throw TailingError.protocolFailure("媒体控制头截断") }
+        guard head.count == 8 else { throw TailingError.protocolFailure(CWL("媒体控制头截断")) }
         let length = Int(head.uint16LE(2))
-        guard length <= 8_192 else { throw TailingError.protocolFailure("媒体控制载荷过长") }
+        guard length <= 8_192 else { throw TailingError.protocolFailure(CWL("媒体控制载荷过长")) }
         let payload = try read(length)
-        guard payload.count == length else { throw TailingError.protocolFailure("媒体控制载荷截断") }
+        guard payload.count == length else { throw TailingError.protocolFailure(CWL("媒体控制载荷截断")) }
         return Auxiliary(command: head.uint16LE(0), token: head.uint32LE(4), payload: payload)
+    }
+
+    static func mediaConfiguration(size: InstrumentFrameSize, h264: Bool) -> Data {
+        var payload = Data()
+        payload.appendLE(UInt32(h264 ? 2 : 1))
+        payload.appendLE(UInt16(size.width))
+        payload.appendLE(UInt16(size.height))
+        return payload
     }
 
     static func jpeg(_ jpeg: Data) throws -> Data {
         guard jpeg.count >= 4, jpeg.count <= 8 * 1_024 * 1_024,
               jpeg.starts(with: [0xff, 0xd8]), jpeg.suffix(2) == Data([0xff, 0xd9]) else {
-            throw TailingError.protocolFailure("JPEG 不完整或过长")
+            throw TailingError.protocolFailure(CWL("JPEG 不完整或过长"))
         }
         var data = Data()
         data.appendLE(UInt32(jpeg.count)); data.append(jpeg)
@@ -68,7 +88,7 @@ enum TailingProtocol {
     static func h264(_ accessUnit: Data, includePrefix: Bool) throws -> Data {
         guard accessUnit.count > 4, accessUnit.count <= 8 * 1_024 * 1_024,
               accessUnit.starts(with: [0, 0, 0, 1]) else {
-            throw TailingError.protocolFailure("H.264 Annex B 帧无效或过长")
+            throw TailingError.protocolFailure(CWL("H.264 Annex B 帧无效或过长"))
         }
         var data = Data(count: includePrefix ? 8 : 0)
         data.appendLE(UInt32(accessUnit.count))
@@ -85,7 +105,7 @@ enum TailingProtocol {
         var payload = data
         while payload.last == 0 { payload.removeLast() }
         guard let object = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
-            throw TailingError.protocolFailure("控制 JSON 无效")
+            throw TailingError.protocolFailure(CWL("控制 JSON 无效"))
         }
         return object
     }
@@ -115,26 +135,27 @@ enum TailingError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .protocolFailure(let text): return "台铃协议：\(text)"
+        case .protocolFailure(let text): return "PXC 协议：\(text)"
         case .timeout(let text): return "台铃等待超时：\(text)"
-        case .closed: return "台铃会话已关闭"
+        case .closed: return CWL("台铃会话已关闭")
         case .channel(let name, let error): return "\(name)：\(error.localizedDescription)"
-        case .system(let text, let code): return "台铃\(text)失败（\(code)\(TailingError.reason(code) == nil ? "" : " \(TailingError.reason(code)!)")）"
+        case .system(let text, let code):
+            return CWL("台铃{1}失败：errno {2}（{3}）", [String(describing: text), String(describing: code), TailingError.hint(code)])
         }
     }
 
-    /// 把常见的 socket errno 翻成人话，省得只看到一个数字。
-    static func reason(_ code: Int32) -> String? {
+    /// errno 的人话解释：65 无路由 / 61 拒绝 / 51 不可达 是仪表投屏最常见的三类失败。
+    static func hint(_ code: Int32) -> String {
         switch code {
-        case 61: return "连接被拒绝，仪表这个端口没在监听"
-        case 65: return "无路由到主机，和仪表不在同一网段或路由被 VPN 接管"
-        case 51: return "网络不可达，检查是否连的是仪表热点"
-        case 60: return "连接超时"
-        case 49: return "本机地址不可用，Wi-Fi 刚切换过"
-        case 64: return "主机已下线"
-        case 56: return "连接被仪表重置"
-        case 9: return "描述符无效，会话已关闭"
-        default: return nil
+        case 61: return CWL("连接被拒绝，仪表没在监听该端口")
+        case 65: return CWL("仪表不可达（无路由），请确认 iPhone 连的是仪表热点、IP 同网段")
+        case 51: return CWL("网络不可达，Wi-Fi 可能刚断开")
+        case 60: return CWL("连接超时，仪表可能仍在官方投屏")
+        case 49: return CWL("本机地址不可用，Wi-Fi 正在切换")
+        case 64: return CWL("仪表已下线")
+        case 56: return CWL("连接被重置，请重开仪表投屏")
+        case 9: return CWL("套接字无效")
+        default: return CWL("系统错误")
         }
     }
 }
