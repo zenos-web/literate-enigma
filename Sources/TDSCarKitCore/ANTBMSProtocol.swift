@@ -26,7 +26,8 @@ import Foundation
 
 public struct ANTBMSReading: Equatable {
     public let voltage: Double
-    /// Raw ANT signed current, in amperes. Use stateCode for charge/discharge labels.
+    /// Signed current in amperes. ANT / meter signs stay raw; other adapters normalize discharge positive.
+    /// Use stateCode for charge/discharge labels.
     public let current: Double
     public let power: Int
     public let stateOfCharge: Int
@@ -39,10 +40,16 @@ public struct ANTBMSReading: Equatable {
     public let mosTemperature: Double?
     public let protectionBits: UInt64
     public let warningBits: UInt64
+    /// The original ANT members remain source compatible; never display absent fields as zero.
+    public var family: BMSFamily = .ant
+    public var available: Set<String> = ["voltage", "current", "power", "charge", "capacity", "remaining", "state", "protection", "warnings"]
+    public var reportedCellDelta: Double? = nil
+    public var extraDetails: [String: String] = [:]
 
     /// maibms separates operating states (MOS on, standby, balancing, etc.)
     /// from actual warnings, including state fields above bit 32.
     public var alarmBits: UInt64 {
+        guard family == .ant else { return warningBits }
         let stateBits = Array(17...30) + [35, 36, 37, 39, 40, 41, 42, 45, 48, 50, 51, 52]
         let mask = stateBits.reduce(UInt64(0)) { $0 | UInt64(1) << $1 }
         return warningBits & ~mask
@@ -50,8 +57,9 @@ public struct ANTBMSReading: Equatable {
     public var hasAlarm: Bool { protectionBits != 0 || alarmBits != 0 }
     public var maximumTemperature: Double? { temperatures.compactMap { $0 }.max() }
     public var cellDelta: Double? {
+        if let reportedCellDelta { return reportedCellDelta }
         let values = cells.compactMap { $0 }
-        guard let low = values.min(), let high = values.max() else { return nil }
+        guard values.count >= 2, let low = values.min(), let high = values.max() else { return nil }
         return high - low
     }
 

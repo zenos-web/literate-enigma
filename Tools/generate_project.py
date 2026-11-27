@@ -44,7 +44,7 @@ for language in ['en', 'zh-Hans']:
 privacy_group = add('privacy-localizations', f'isa = PBXVariantGroup; children = ({",".join(privacy_children)},); name = InfoPlist.strings; sourceTree = "<group>";')
 refs.append(privacy_group)
 resource_builds.append(add('privacy-build', f'isa = PBXBuildFile; fileRef = {privacy_group};'))
-for license_path in ['App/KCP-LICENSE.txt', 'App/ANTBMS-LICENSE.txt']:
+for license_path in ['App/KCP-LICENSE.txt', 'App/ANTBMS-LICENSE.txt', 'App/maibms-MIT.txt']:
     license_ref = add('ref:'+license_path, f'isa = PBXFileReference; lastKnownFileType = text; path = {q(license_path)}; sourceTree = "<group>";')
     refs.append(license_ref)
     resource_builds.append(add('build:'+license_path, f'isa = PBXBuildFile; fileRef = {license_ref};'))

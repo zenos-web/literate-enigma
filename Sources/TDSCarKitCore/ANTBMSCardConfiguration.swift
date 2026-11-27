@@ -17,6 +17,9 @@ public struct ANTBMSCardConfiguration: Equatable, Sendable {
         }
 
         public func text(_ reading: ANTBMSReading) -> String {
+            if [.charge, .voltage, .current, .power].contains(self), !reading.available.contains(rawValue) {
+                return self == .charge ? "--%" : self == .voltage ? "--V" : self == .current ? "--A" : "--W"
+            }
             switch self {
             case .charge: return "\(reading.stateOfCharge)%"
             case .voltage: return String(format: "%.2fV", reading.voltage)
@@ -86,7 +89,7 @@ public struct ANTBMSCardConfiguration: Equatable, Sendable {
     public func lines(for reading: ANTBMSReading) -> [String] {
         let tokens = fields.map { $0.text(reading) }
         let split = tokens.count <= 3 ? tokens.count : (tokens.count + 1) / 2
-        var lines = ["ANT  " + tokens.prefix(split).joined(separator: "  ")]
+        var lines = [reading.family.shortName + "  " + tokens.prefix(split).joined(separator: "  ")]
         if reading.hasAlarm { lines[0] += " · 告警" }
         if split < tokens.count { lines.append(tokens.dropFirst(split).joined(separator: "  ")) }
         return lines

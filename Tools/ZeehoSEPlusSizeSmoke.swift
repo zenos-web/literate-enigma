@@ -3,7 +3,7 @@ import Foundation
 @main
 struct ZeehoSEPlusSizeSmoke {
     static func main() {
-        precondition(ZeehoFrameRate.allCases.map(\.rawValue) == [25, 30, 60])
+        precondition(ZeehoFrameRate.allCases.map(\.rawValue) == [25, 30, 45, 50, 60])
         precondition(ZeehoFrameRate.fps25.sourceFPS == 30 && ZeehoFrameRate.fps25.bitrate == 2_500_000)
         precondition(ZeehoFrameRate.fps30.sourceFPS == 30 && ZeehoFrameRate.fps30.bitrate == 3_000_000)
         precondition(ZeehoFrameRate.fps60.sourceFPS == 60 && ZeehoFrameRate.fps60.bitrate == 6_000_000)
@@ -56,6 +56,25 @@ struct ZeehoSEPlusSizeSmoke {
         let jpeg = InstrumentFrameSize(width: 480, height: 272)
         precondition(TailingDisplayProfile.tailing43.outputSize(for: jpeg) == jpeg)
         precondition(TailingDisplayProfile.tailing43.outputSize(for: original) == nil)
+        precondition(ZeehoFrameRate.fps45.sourceFPS == 45 && ZeehoFrameRate.fps45.bitrate == 4_500_000)
+        precondition(ZeehoFrameRate.fps50.sourceFPS == 50 && ZeehoFrameRate.fps50.bitrate == 5_000_000)
+        precondition(ZeehoBitrate.allCases.map(\.rawValue) == [0, 12, 15, 18, 24, 30])
+        precondition(ZeehoBitrate.auto.bitsPerSecond == nil)
+        precondition(ZeehoBitrate.m15.bitsPerSecond == 15_000_000 && ZeehoBitrate.m30.bitsPerSecond == 30_000_000)
+        precondition(ZeehoEncodeProfile.allCases == [.baseline, .main])
+        let ae4i = TailingDisplayProfile.zeehoAE4i
+        precondition(ae4i.preferredSize == InstrumentFrameSize(width: 2048, height: 968))
+        precondition(ae4i.bitrateScale == 6 && sePlus.bitrateScale == 1)
+        precondition(ae4i.prioritizesEncodingQuality && !sePlus.prioritizesEncodingQuality)
+        for (w, h) in [(2048, 968), (2048, 960), (1024, 480), (1024, 484), (1920, 1080)] {
+            let reported = InstrumentFrameSize(width: w, height: h)
+            precondition(ae4i.outputSize(for: reported) == reported)
+        }
+        for (w, h) in [(2047, 968), (2048, 969), (2048, 481), (0, 968), (2560, 968), (2048, 1081), (65535, 65535)] {
+            precondition(ae4i.outputSize(for: InstrumentFrameSize(width: w, height: h)) == nil)
+        }
+        let doubledReply = TailingProtocol.mediaConfiguration(size: ae4i.preferredSize, h264: ae4i.isZeeho)
+        precondition(Array(doubledReply) == [2, 0, 0, 0, 0x00, 0x08, 0xc8, 0x03])
         let nonDefault = InstrumentFrameSize(width: 854, height: 480)
         let response = TailingProtocol.mediaConfiguration(size: nonDefault, h264: sePlus.isZeeho)
         precondition(Array(response) == [2, 0, 0, 0, 0x56, 0x03, 0xe0, 0x01])

@@ -88,7 +88,12 @@ final class NativeReceiver {
     /// BMS updates are serialized with output startup; CoreGraphics images are
     /// immutable and reused by the instrument encoder until the next update.
     func setBMSOverlay(_ image: CGImage?, configuration: ANTBMSCardConfiguration) {
-        queue.async { [weak self] in self?.ninebot.setBMSOverlay(image, configuration: configuration) }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.ninebot.setBMSOverlay(image, configuration: configuration)
+            self.zeeho.setBMSOverlay(image, configuration: configuration)
+            self.zeeho62.setBMSOverlay(image, configuration: configuration)
+        }
     }
 
     func start(configuration: ReceiverConfiguration, identity: AccessoryIdentity, advertise: Bool = true,
@@ -127,6 +132,8 @@ final class NativeReceiver {
                     self.zeeho.start(localAddress: configuration.address,
                         targetAddress: configuration.zeehoAutomaticAddress ? "" : target,
                         profile: configuration.zeehoProfile, frameRate: configuration.zeehoFrameRate,
+                        bitrateOverride: configuration.zeehoBitrate.bitsPerSecond,
+                        encodeProfile: configuration.zeehoEncodeProfile,
                         videoMode: configuration.zeehoVideoMode,
                         sourceSize: InstrumentFrameSize(width: configuration.width, height: configuration.height), phone: phone,
                         onState: { [weak self] in self?.onZeehoState?($0) },
@@ -145,7 +152,7 @@ final class NativeReceiver {
                 output.start(localAddress: configuration.address, targetAddress: target, phone: phone, profile: profile,
                              onState: { [weak self] in self?.onCfmotoState?($0) },
                              onLog: { [weak self] in self?.log($0) },
-                             requestKeyframe: { [weak self] in self?.requestKeyFrame(reason: "春风解码恢复") })
+                             requestKeyframe: { [weak self] in self?.requestKeyFrame(reason: "春风解码恢复") }, onGiveUp: { [weak self] in self?.queue.async { [weak self] in self?.fail("春风仪表持续连接失败超过3分钟，已停止CarPlay") } })
             }
             if let target = configuration.ninebotAddress {
                 self.ninebot.start(localAddress: configuration.address, targetAddress: target, mode: configuration.ninebotMode,

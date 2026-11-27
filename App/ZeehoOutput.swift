@@ -6,21 +6,43 @@ import VideoToolbox
 final class ZeehoOutput {
     private let queue = DispatchQueue(label: "CarWithin.zeeho", qos: .userInitiated)
     private var session: Session?
+    private var bmsImage: CGImage?
+    private var bmsConfiguration = ANTBMSCardConfiguration()
+
+    func setBMSOverlay(_ image: CGImage?, configuration: ANTBMSCardConfiguration) {
+        bmsImage = image; bmsConfiguration = configuration
+        let current = session
+        queue.async { current?.setBMSOverlay(image, configuration: configuration) }
+    }
 
     deinit { stop() }
 
     func start(localAddress: String, targetAddress: String, profile: TailingDisplayProfile,
                frameRate: ZeehoFrameRate = .fps25,
+               bitrateOverride: Int? = nil, encodeProfile: ZeehoEncodeProfile = .baseline,
                videoMode: ZeehoVideoMode = .transcode, sourceSize: InstrumentFrameSize? = nil,
                phone: TailingPhoneInfo, onState: @escaping (String) -> Void,
                onLog: @escaping (String) -> Void, requestKeyframe: @escaping () -> Void) {
         stop()
+        // 自动档按像素数放大码率（2048×968 是旧款 1024×480 的 4 倍，再留余量给文字边缘），
+        // 手动档直接采用用户选的 Mbit/s；上限 24 Mbit/s 是为了压住帧率抖动。
+        let automatic = min(24_000_000, Int((Double(frameRate.bitrate) * profile.bitrateScale).rounded()))
+        let bitrate = bitrateOverride ?? automatic
+        let level: CFString = encodeProfile == .main
+            ? kVTProfileLevel_H264_Main_AutoLevel
+            : kVTProfileLevel_H264_Baseline_AutoLevel
         let next = Session(queue: queue, localAddress: localAddress, targetAddress: targetAddress,
                            profile: profile, frameRate: frameRate, videoMode: videoMode,
-                           sourceSize: sourceSize ?? profile.preferredSize, phone: phone,
+                           sourceSize: sourceSize ?? profile.preferredSize, bitrate: bitrate,
+                           prioritizeQuality: profile.prioritizesEncodingQuality,
+                           profileLevel: level, encodeProfileName: encodeProfile.title, phone: phone,
                            onState: onState, onLog: onLog, requestKeyframe: requestKeyframe)
         session = next
-        next.start()
+        let overlay = bmsImage, configuration = bmsConfiguration
+        queue.async {
+            next.setBMSOverlay(overlay, configuration: configuration)
+            next.start()
+        }
     }
 
     func append(_ data: Data, codec: VideoCodec, keyframe: Bool) {
@@ -52,6 +74,10 @@ final class ZeehoOutput {
         private let connection: TailingConnection
         private let frameRate: ZeehoFrameRate
         private let sourceSize: InstrumentFrameSize
+        private let bitrate: Int
+        private let prioritizeQuality: Bool
+        private let profileLevel: CFString
+        private let encodeProfileName: String
         private var usesRelay: Bool
         private var isRelaying: Bool { lock.withLock { usesRelay } }
         private let relayCondition = NSCondition()
@@ -68,7 +94,7 @@ final class ZeehoOutput {
         private var parameters = VideoParameterSets(codec: .h264)
         private var waitingForIDR = true
         private var latest: CVPixelBuffer?
-        private lazy var compositor = CIContext(options: [.cacheIntermediates: false])
+        private let canvas = InstrumentVideoCanvas()
         private var fresh = false
         private let origin = ProcessInfo.processInfo.systemUptime
         private var lastFrame = -Double.infinity
@@ -76,24 +102,47 @@ final class ZeehoOutput {
         private var lastCodecFailure = -Double.infinity
         private var nextHeartbeat = 0.0
         private var counter: UInt32 = 0
+        private var loggedSource = false
         private var lastReply: Double?
         private var sentPicture = false
         private var status = ""
 
         init(queue: DispatchQueue, localAddress: String, targetAddress: String, profile: TailingDisplayProfile,
              frameRate: ZeehoFrameRate,
-             videoMode: ZeehoVideoMode, sourceSize: InstrumentFrameSize,
+             videoMode: ZeehoVideoMode, sourceSize: InstrumentFrameSize, bitrate: Int,
+             prioritizeQuality: Bool, profileLevel: CFString, encodeProfileName: String,
              phone: TailingPhoneInfo, onState: @escaping (String) -> Void, onLog: @escaping (String) -> Void,
              requestKeyframe: @escaping () -> Void) {
             self.queue = queue
             self.frameRate = frameRate
             self.sourceSize = sourceSize
+            self.bitrate = bitrate
+            self.prioritizeQuality = prioritizeQuality
+            self.profileLevel = profileLevel
+            self.encodeProfileName = encodeProfileName
             self.usesRelay = profile == .zeehoSEPlus && videoMode.effective(for: frameRate) == .relay
             self.connection = TailingConnection(localIP: localAddress, targetIP: targetAddress,
                 profile: profile, phone: phone, log: onLog)
             self.onState = onState
             self.onLog = onLog
             self.requestKeyframe = requestKeyframe
+        }
+
+        // Output-queue only. Once compositing is needed, remain in transcode
+        // until the next session to avoid switching codecs on a dependent P-frame.
+        func setBMSOverlay(_ image: CGImage?, configuration: ANTBMSCardConfiguration) {
+            canvas.setBMSOverlay(image, configuration: configuration)
+            guard image != nil else { return }
+            let switched = lock.withLock {
+                guard usesRelay else { return false }
+                usesRelay = false
+                return true
+            }
+            if switched {
+                relayCondition.lock(); relayCondition.broadcast(); relayCondition.unlock()
+                onLog(CWL("BMS 电池卡片已启用，本次极核输出自动改用兼容转码"))
+                requestKeyframe()
+            }
         }
 
         func start() {
@@ -111,7 +160,8 @@ final class ZeehoOutput {
                     if isRelaying {
                         onLog("极核使用 H.264 原码流直传，不执行手机端解码、缩放或编码；仪表兼容性需实测")
                         try runRelay(size: size)
-                    } else {
+                    }
+                    if active {
                         onLog("极核使用兼容转码，CarPlay 源画面 \(sourceSize)，仪表输出 \(size)")
                         var first = true
                         var nextFrame = ProcessInfo.processInfo.systemUptime
@@ -126,7 +176,7 @@ final class ZeehoOutput {
                             guard active else { break }
                             let result = queue.sync { () -> H264EncodedFrame? in
                                 guard active, let image = latest else { return nil }
-                                return encode(image, size: size, at: ProcessInfo.processInfo.systemUptime, forceKeyframe: first || ProcessInfo.processInfo.systemUptime - lastKeyframe >= 2)
+                                return encode(image, size: size, at: ProcessInfo.processInfo.systemUptime, forceKeyframe: first)
                             }
                             guard let result else {
                                 // Preserve the pending pull request until an encodable frame is available.
@@ -260,10 +310,10 @@ final class ZeehoOutput {
 
         private func runRelay(size: InstrumentFrameSize) throws {
             var lastPicture = ProcessInfo.processInfo.systemUptime
-            while active {
+            while active && isRelaying {
                 try connection.checkHealth()
                 guard let frame = try nextRelayFrame() else {
-                    guard active else { break }
+                    guard active, isRelaying else { break }
                     requestRelayKeyframe()
                     if ProcessInfo.processInfo.systemUptime - lastPicture >= 10 {
                         throw ConfigurationError("H.264 直传连续 10 秒未收到完整源画面，请查看锁屏前后日志或改用兼容转码")
@@ -331,10 +381,18 @@ final class ZeehoOutput {
 
         private func encode(_ image: CVPixelBuffer, size: InstrumentFrameSize, at now: Double, forceKeyframe: Bool) -> H264EncodedFrame? {
             do {
+                if !loggedSource {
+                    loggedSource = true
+                    let source = InstrumentFrameSize(width: CVPixelBufferGetWidth(image),
+                                                     height: CVPixelBufferGetHeight(image))
+                    onLog("极核源画面 \(source) → 输出 \(size)\(source == size ? "（一比一）" : "（\(source) 已缩放）")")
+                }
                 if encoder == nil {
                     guard now - lastCodecFailure >= 0.5 else { return nil }
                     encoder = try H264Encoder(width: size.width, height: size.height,
-                                              fps: frameRate.rawValue, bitrate: frameRate.bitrate) { [weak self] result in
+                                              fps: frameRate.rawValue, bitrate: bitrate,
+                                              prioritizeQuality: prioritizeQuality,
+                                              profileLevel: profileLevel) { [weak self] result in
                         guard let self else { return }
                         self.lock.withLock { self.encoded = result }
                     }
@@ -364,23 +422,7 @@ final class ZeehoOutput {
         }
 
         private func fittedImage(_ image: CVPixelBuffer, to size: InstrumentFrameSize) throws -> CVPixelBuffer {
-            let width = size.width, height = size.height
-            if CVPixelBufferGetWidth(image) == width, CVPixelBufferGetHeight(image) == height { return image }
-            var buffer: CVPixelBuffer?
-            let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
-                                             [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &buffer)
-            guard status == kCVReturnSuccess, let buffer else { throw ConfigurationError(CWL("无法分配极核缩放画面（{1}）", [String(describing: status)])) }
-            let source = CIImage(cvPixelBuffer: image)
-            let destination = size.fittedRect(for: source.extent.size)
-            let scale = destination.width / source.extent.width
-            let scaled = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-            let positioned = scaled.transformed(by: CGAffineTransform(
-                translationX: destination.minX - scaled.extent.minX,
-                y: destination.minY - scaled.extent.minY))
-            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-            compositor.render(positioned.composited(over: CIImage(color: .black)).cropped(to: bounds),
-                              to: buffer, bounds: bounds, colorSpace: CGColorSpaceCreateDeviceRGB())
-            return buffer
+            try canvas.fittedImage(image, width: size.width, height: size.height)
         }
 
         private func reportFrameSent(size: InstrumentFrameSize) {
@@ -390,8 +432,8 @@ final class ZeehoOutput {
                 if isRelaying {
                     onLog("极核首帧已发送 · \(size) · H.264 直传 · 源目标 \(frameRate.rawValue) FPS · 码率由 CarPlay 决定")
                 } else {
-                    let bitrate = String(format: "%.1f", Double(frameRate.bitrate) / 1_000_000)
-                    onLog("极核首帧已发送 · \(size) · 兼容转码 · 目标 \(frameRate.rawValue) FPS · 码率 \(bitrate) Mbit/s")
+                    let actual = String(format: "%.1f", Double(bitrate) / 1_000_000)
+                    onLog("极核首帧已发送 · \(size) · 兼容转码 · 目标 \(frameRate.rawValue) FPS · 码率 \(actual) Mbit/s")
                 }
             }
             if let started = lastReply {

@@ -64,7 +64,7 @@ final class TailingOutputSession: @unchecked Sendable {
     private var waitingForKeyframe = true
     // The 480×272 conversion must also run while locked. A GPU context cannot be
     // used by a background iOS app; always use CPU here to avoid transition races.
-    private let context = CIContext(options: [.cacheIntermediates: false])
+    private let context = CIContext(options: [.cacheIntermediates: false, .useSoftwareRenderer: true])
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     #if DEBUG
     private let performance = TailingPerformanceDiagnostics()

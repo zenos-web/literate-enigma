@@ -13,12 +13,12 @@ final class ANTBMSCardConfigurationTests: XCTestCase {
     func testExistingUsersKeepAllSixMetricsInTwoLines() {
         let card = ANTBMSCardConfiguration()
         XCTAssertEqual(card.size, .medium)
-        XCTAssertEqual(card.lines(for: reading()), ["ANT  78%  82.78V  14°C", "-12.3A  -1018W  压差 6mV"])
+        XCTAssertEqual(card.lines(for: reading()), ["蚂蚁  78%  82.78V  14°C", "-12.3A  -1018W  压差 6mV"])
     }
 
     func testCompactCardKeepsVoltageAndSpreadOnOneLine() {
         let card = ANTBMSCardConfiguration(savedFields: ANTBMSCardConfiguration.compactFields.map(\.rawValue))
-        XCTAssertEqual(card.lines(for: reading()), ["ANT  78%  82.78V  压差 6mV"])
+        XCTAssertEqual(card.lines(for: reading()), ["蚂蚁  78%  82.78V  压差 6mV"])
     }
 
     func testSavedFieldsNormalizeDuplicatesAndUnknownValues() {
@@ -42,12 +42,12 @@ final class ANTBMSCardConfigurationTests: XCTestCase {
     func testMissingSensorsAreUnknownAndAlarmSurvivesFieldSelection() {
         let card = ANTBMSCardConfiguration(savedFields: ["temperature", "cellDelta"])
         XCTAssertEqual(card.lines(for: reading(cells: [nil, nil], temperatures: [], protection: 1)),
-            ["ANT  --°C  压差 --mV · 告警"])
+            ["蚂蚁  --°C  压差 --mV · 告警"])
     }
 
     func testCustomOrderIsRenderedAndSurvivesTogglingAndRestoring() {
         var card = ANTBMSCardConfiguration(savedFields: ["cellDelta", "voltage", "charge"])
-        XCTAssertEqual(card.lines(for: reading()), ["ANT  压差 6mV  82.78V  78%"])
+        XCTAssertEqual(card.lines(for: reading()), ["蚂蚁  压差 6mV  82.78V  78%"])
         card.move(.charge, to: 0)
         XCTAssertEqual(card.fields, [.charge, .cellDelta, .voltage])
         card.set(.current, visible: true)

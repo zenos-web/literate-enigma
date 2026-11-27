@@ -17,10 +17,11 @@ final class BMSCardPreviewView: UIView {
     private var renderedText: [String]?
     private var renderedBackground: ANTBMSCardConfiguration.Background?
 
-    func update(reading: ANTBMSReading?, configuration: ANTBMSCardConfiguration, aspectRatio: CGFloat) {
+    func update(reading: ANTBMSReading?, configuration: ANTBMSCardConfiguration, aspectRatio: CGFloat, family: BMSFamily? = nil) {
         if self.configuration != configuration { self.configuration = configuration }
         videoAspectRatio = aspectRatio
-        let previewReading = reading ?? Self.example
+        var previewReading = reading ?? Self.example
+        if reading == nil, let family { previewReading.family = family }
         let text = configuration.lines(for: previewReading)
         if renderedText != text || renderedBackground != configuration.background {
             renderedText = text; renderedBackground = configuration.background

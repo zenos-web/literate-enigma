@@ -43,8 +43,10 @@ struct SupporterDirectory: Codable {
         let bundled = [
             Contributor(name: "yiquchangge1", contribution: "极核 SE+ 5/5.5 寸适配", category: "code", github: "yiquchangge1"),
             Contributor(name: "武汉", contribution: "极核 AE2 Pro 5 寸适配", category: "code", github: "yuliang-shuji"),
-            Contributor(name: "Boos4721", contribution: "蚂蚁 ANT BMS 与电池卡片", category: "code", github: "Boos4721"),
-            Contributor(name: "扫毒单位", contribution: "春风 5/6.2 寸适配", category: "code", github: "SDDW007")
+            Contributor(name: "Boos4721", contribution: "多品牌 BMS 与九号／极核电池卡片", category: "code", github: "Boos4721"),
+            Contributor(name: "扫毒单位", contribution: "春风 5/6.2 寸适配", category: "code", github: "SDDW007"),
+            Contributor(name: "ranchen-love", contribution: "春风 5 寸协商、断线恢复与自动启动", category: "code", github: "ranchen-love"),
+            Contributor(name: "飞扬大大", contribution: "极核 AE4i Pro+ 6.2 寸适配与实车测试", category: "code", github: "F31C-73BD")
         ]
         return bundled + contributors.filter { person in
             !bundled.contains { $0.name == person.name || (person.github != nil && $0.github == person.github) }

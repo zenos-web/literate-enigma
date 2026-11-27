@@ -59,24 +59,6 @@ final class TailingConnection: @unchecked Sendable {
         self.ports = ports; self.identityProvider = identityProvider; self.log = log
     }
 
-    /// 注册通道（10930）偶发 errno 65/61，多数是仪表热点刚起或 Wi-Fi 刚关联完成，重试即可。
-    private func connectAnnouncement(localIP: String, targetIP: String, port: UInt16) throws -> TailingSocket {
-        var lastError: Error?
-        for attempt in 1...3 {
-            let socket = try tracked(TailingSocket.create())
-            do {
-                try socket.connect(localIP: localIP, remoteIP: targetIP, port: port, timeout: 4)
-                return socket
-            } catch {
-                socket.close()
-                lastError = error
-                log("\(dashboard) 连接 \(targetIP):\(port) 第 \(attempt) 次失败：\(error.localizedDescription)")
-                if attempt < 3 { Thread.sleep(forTimeInterval: 0.8) }
-            }
-        }
-        throw lastError ?? TailingError.timeout(CWL("连接仪表注册通道 {1}", [String(describing: port)]))
-    }
-
     @discardableResult
     func start() throws -> InstrumentFrameSize {
         let loaded = try identityProvider()
@@ -105,7 +87,8 @@ final class TailingConnection: @unchecked Sendable {
         let announcement: TailingSocket
         if let discoveredSocket { announcement = discoveredSocket }
         else {
-            announcement = try connectAnnouncement(localIP: localIP, targetIP: targetIP, port: ports.announcement)
+            announcement = try tracked(TailingSocket.create())
+            try announcement.connect(localIP: localIP, remoteIP: targetIP, port: ports.announcement)
         }
         defer { announcement.close() }
         try announcement.write(TailingProtocol.control(0x70000010, payload: TailingProtocol.json([
@@ -235,6 +218,12 @@ final class TailingConnection: @unchecked Sendable {
         return socket
     }
 
+    /// 输入诊断：按字节打印仪表发来的输入帧，用来确认按键/触摸的真实格式。
+    private func logInput(_ name: String, _ payload: Data) {
+        let head = payload.prefix(48).map { String(format: "%02x", $0) }.joined(separator: " ")
+        log("[输入诊断] \(name) \(payload.count) 字节: \(head)\(payload.count > 48 ? " …" : "")")
+    }
+
     private func accept(_ server: TailingSocket, port: UInt16) {
         do {
             while true {
@@ -333,7 +322,10 @@ final class TailingConnection: @unchecked Sendable {
                                request.command, request.payload.count, request.command + 1))
                     continue
                 }
-                throw TailingError.protocolFailure(String(format: CWL("未支持的协商命令 0x%08x"), request.command))
+                // 车上按键可能从这条通道下来。先记录原始帧，不认识的命令只记日志、不中断会话，
+                // 方便确认真实字段格式（诊断用，不改变既有行为）。
+                logInput(String(format: "会话控制 0x%08x", request.command), request.payload)
+                continue
             }
             try replyControl(socket, request, payload: payload)
             if request.command == 0x20000 && !reverseStarted {
@@ -448,10 +440,13 @@ final class TailingConnection: @unchecked Sendable {
                 response = 0x31; payload.appendLE(UInt32(5002)); payload.appendLE(UInt32(1))
             case 0x60:
                 response = 0x61; payload = try TailingProtocol.json(["supportFunction": 0])
-            case 0x20: continue // 不执行反控触摸。
+            case 0x20:
+                // 仪表屏触摸/按键事件：当前只记录原始载荷，拿到真实帧后再决定转发方式。
+                logInput("反控触摸 0x20", request.payload)
+                continue
             default:
                 response = 0x7f02
-                log(String(format: CWL("媒体控制通道暂不支持 0x%04x"), request.command))
+                logInput(String(format: "媒体控制 0x%04x", request.command), request.payload)
             }
             try socket.write(TailingProtocol.auxiliary(response, token: request.token, payload: payload))
         }

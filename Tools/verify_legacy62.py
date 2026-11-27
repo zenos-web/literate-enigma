@@ -18,12 +18,31 @@ def original_body(name):
                      if not line.startswith('import ')).strip() + '\n'
 
 text = (root / 'App/Zeeho62Legacy.swift').read_text(encoding='utf-8')
+def without_bms_render_adapter(value):
+    # Only these exact additions are allowed: retain the original no-card scaler,
+    # wire codec, timing, transport and encoder. Do not update original hashes.
+    changes = [
+        ('    private var bmsImage: CGImage?\n    private var bmsConfiguration = ANTBMSCardConfiguration()\n\n    func setBMSOverlay(_ image: CGImage?, configuration: ANTBMSCardConfiguration) {\n        bmsImage = image; bmsConfiguration = configuration\n        let current = session\n        queue.async { current?.setBMSOverlay(image, configuration: configuration) }\n    }\n',
+         ''),
+        ('        let overlay = bmsImage, configuration = bmsConfiguration\n        queue.async {\n            next.setBMSOverlay(overlay, configuration: configuration)\n            next.start()\n        }\n',
+         '        next.start()\n'),
+        ('        private var bmsCanvas: InstrumentVideoCanvas?\n\n        func setBMSOverlay(_ image: CGImage?, configuration: ANTBMSCardConfiguration) {\n            guard let image else { bmsCanvas = nil; return }\n            if bmsCanvas == nil { bmsCanvas = InstrumentVideoCanvas() }\n            bmsCanvas?.setBMSOverlay(image, configuration: configuration)\n        }\n',
+         ''),
+        ('            if let bmsCanvas { return try bmsCanvas.fittedImage(image, width: width, height: height) }\n',
+         ''),
+    ]
+    for addition, original in changes:
+        assert value.count(addition) == 1, '6.2 BMS adapter changed unexpectedly'
+        value = value.replace(addition, original, 1)
+    return value
+
 blocks = {}
 for name, expected in manifest['embedded_blocks'].items():
     start, end = '    // BEGIN ORIGINAL62 ' + name + '\n', '    // END ORIGINAL62 ' + name
     assert text.count(start) == 1 and text.count(end) == 1
     value = text.split(start, 1)[1].split(end, 1)[0]
     value = ''.join(line[4:] + '\n' for line in value.splitlines())
+    if name == 'output': value = without_bms_render_adapter(value)
     assert sha256(value.encode('utf-8')).hexdigest() == expected, name
     blocks[name] = value
 
@@ -61,5 +80,7 @@ cases = re.search(r'private enum HeadUnitOutput: Int \{.*?\bcase ([^\n]+)', sett
 assert [name.strip() for name in cases.split(',')] == [
     'browser', 'carLife', 'airPlay', 'tailing', 'ninebot', 'zeeho', 'ninebotSeven', 'ninebot43', 'zeehoSEPlus', 'zeehoAE2', 'cfmoto5', 'cfmoto62'
 ], 'persisted output IDs changed'
-print('PASS: original 6.2 output and wire codec unchanged; original negotiation restored with IP-discovery-only changes; raw snapshots and shared socket/identity verified (allowing presentation localization)')
+print('PASS: original 6.2 output preserved except exact optional BMS render adapter; wire codec unchanged; original negotiation restored with IP-discovery-only changes; raw snapshots and shared socket/identity verified (allowing presentation localization)')
 print('PASS: upstream output IDs 0–7 preserved; SE+ appended as ID 8')
+assert 'case zeehoAE4i = 26' in settings
+print('PASS: AE4i ID 26 reserved consistently with local development profiles')

@@ -139,23 +139,7 @@ enum TailingError: LocalizedError {
         case .timeout(let text): return "台铃等待超时：\(text)"
         case .closed: return CWL("台铃会话已关闭")
         case .channel(let name, let error): return "\(name)：\(error.localizedDescription)"
-        case .system(let text, let code):
-            return CWL("台铃{1}失败：errno {2}（{3}）", [String(describing: text), String(describing: code), TailingError.hint(code)])
-        }
-    }
-
-    /// errno 的人话解释：65 无路由 / 61 拒绝 / 51 不可达 是仪表投屏最常见的三类失败。
-    static func hint(_ code: Int32) -> String {
-        switch code {
-        case 61: return CWL("连接被拒绝，仪表没在监听该端口")
-        case 65: return CWL("仪表不可达（无路由），请确认 iPhone 连的是仪表热点、IP 同网段")
-        case 51: return CWL("网络不可达，Wi-Fi 可能刚断开")
-        case 60: return CWL("连接超时，仪表可能仍在官方投屏")
-        case 49: return CWL("本机地址不可用，Wi-Fi 正在切换")
-        case 64: return CWL("仪表已下线")
-        case 56: return CWL("连接被重置，请重开仪表投屏")
-        case 9: return CWL("套接字无效")
-        default: return CWL("系统错误")
+        case .system(let text, let code): return CWL("台铃{1}失败（{2}）", [String(describing: text), String(describing: code)])
         }
     }
 }

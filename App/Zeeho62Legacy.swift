@@ -4,7 +4,7 @@ import Foundation
 import VideoToolbox
 
 // Original CarWithin v1.0.3 6.2-inch stack, isolated from SE+ adaptations.
-// Only the connection prelude adds optional IP discovery and reuses its socket.
+// Connection prelude adds IP discovery; an optional BMS canvas precedes original scaling.
 enum Zeeho62Legacy {
     // BEGIN ORIGINAL62 output
     /// Runs codecs and UDP writes off the CarPlay receive queue.
@@ -15,6 +15,14 @@ enum Zeeho62Legacy {
 
         private let queue = DispatchQueue(label: "CarWithin.zeeho", qos: .userInitiated)
         private var session: Session?
+        private var bmsImage: CGImage?
+        private var bmsConfiguration = ANTBMSCardConfiguration()
+
+        func setBMSOverlay(_ image: CGImage?, configuration: ANTBMSCardConfiguration) {
+            bmsImage = image; bmsConfiguration = configuration
+            let current = session
+            queue.async { current?.setBMSOverlay(image, configuration: configuration) }
+        }
 
         deinit { stop() }
 
@@ -23,7 +31,11 @@ enum Zeeho62Legacy {
             stop()
             let next = Session(queue: queue, localAddress: localAddress, targetAddress: targetAddress, phone: phone, onState: onState, onLog: onLog, requestKeyframe: requestKeyframe)
             session = next
-            next.start()
+            let overlay = bmsImage, configuration = bmsConfiguration
+            queue.async {
+                next.setBMSOverlay(overlay, configuration: configuration)
+                next.start()
+            }
         }
 
         func append(_ data: Data, codec: VideoCodec, keyframe: Bool) {
@@ -58,7 +70,14 @@ enum Zeeho62Legacy {
             private var parameters = VideoParameterSets(codec: .h264)
             private var waitingForIDR = true
             private var latest: CVPixelBuffer?
-            private lazy var compositor = CIContext(options: [.cacheIntermediates: false])
+            private var bmsCanvas: InstrumentVideoCanvas?
+
+            func setBMSOverlay(_ image: CGImage?, configuration: ANTBMSCardConfiguration) {
+                guard let image else { bmsCanvas = nil; return }
+                if bmsCanvas == nil { bmsCanvas = InstrumentVideoCanvas() }
+                bmsCanvas?.setBMSOverlay(image, configuration: configuration)
+            }
+            private lazy var compositor = CIContext(options: [.useSoftwareRenderer: true, .cacheIntermediates: false])
             private var fresh = false
             private let origin = ProcessInfo.processInfo.systemUptime
             private var lastFrame = -Double.infinity
@@ -69,8 +88,6 @@ enum Zeeho62Legacy {
             private var lastReply: Double?
             private var sentPicture = false
             private var status = ""
-            /// 仪表上报的实际面板尺寸：1024×480 或 1024×600 等。
-            private var outputSize = InstrumentFrameSize(width: 1024, height: 480)
 
             init(queue: DispatchQueue, localAddress: String, targetAddress: String, phone: TailingPhoneInfo, onState: @escaping (String) -> Void, onLog: @escaping (String) -> Void,
                  requestKeyframe: @escaping () -> Void) {
@@ -87,7 +104,6 @@ enum Zeeho62Legacy {
                 DispatchQueue.global(qos: .userInitiated).async { [self] in
                     do {
                         try connection.start()
-                        if let size = connection.mediaSize { outputSize = size }
                         guard active else { return }
                         report("仪表已连接，等待 CarPlay 画面…")
                         var first = true
@@ -103,7 +119,7 @@ enum Zeeho62Legacy {
                             guard active else { break }
                             let result = queue.sync { () -> H264EncodedFrame? in
                                 guard active, let image = latest else { return nil }
-                                return encode(image, at: ProcessInfo.processInfo.systemUptime, forceKeyframe: first || ProcessInfo.processInfo.systemUptime - lastKeyframe >= 2)
+                                return encode(image, at: ProcessInfo.processInfo.systemUptime, forceKeyframe: first)
                             }
                             guard let result else {
                                 // Preserve the pending pull request until an encodable frame is available.
@@ -118,12 +134,12 @@ enum Zeeho62Legacy {
                                 guard let recovered else { throw TailingError.timeout("等待 H.264 编码画面") }
                                 try connection.sendH264(recovered.data)
                                 first = false
-                                report("正在投屏 · \(outputSize.width)×\(outputSize.height) · H.264")
+                                report("正在投屏 · 1024×480 · H.264")
                                 continue
                             }
                             try connection.sendH264(result.data)
                             first = false
-                            report("正在投屏 · \(outputSize.width)×\(outputSize.height) · H.264")
+                            report("正在投屏 · 1024×480 · H.264")
                         }
                     } catch {
                         if active {
@@ -212,7 +228,7 @@ enum Zeeho62Legacy {
                 do {
                     if encoder == nil {
                         guard now - lastCodecFailure >= 0.5 else { return nil }
-                        encoder = try H264Encoder(width: outputSize.width, height: outputSize.height,
+                        encoder = try H264Encoder(width: ZeehoOutput.width, height: ZeehoOutput.height,
                                                   fps: ZeehoOutput.fps, bitrate: 2_500_000) { [weak self] result in
                             guard let self else { return }
                             self.lock.withLock { self.encoded = result }
@@ -243,7 +259,8 @@ enum Zeeho62Legacy {
             }
 
             private func fittedImage(_ image: CVPixelBuffer) throws -> CVPixelBuffer {
-                let width = outputSize.width, height = outputSize.height
+                let width = ZeehoOutput.width, height = ZeehoOutput.height
+                if let bmsCanvas { return try bmsCanvas.fittedImage(image, width: width, height: height) }
                 if CVPixelBufferGetWidth(image) == width, CVPixelBufferGetHeight(image) == height { return image }
                 var buffer: CVPixelBuffer?
                 let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
@@ -299,8 +316,8 @@ enum Zeeho62Legacy {
     // BEGIN ORIGINAL62 connection
     // Adapted from xmz28/ninebot_pro: NinebotPro/Networking/TailingConnection.swift
     struct TailingDisplayProfile {
-        var width: Int
-        var height: Int
+        let width: Int
+        let height: Int
         let isZeeho: Bool
         static let tailing43 = TailingDisplayProfile(width: 480, height: 272, isZeeho: false)
         static let zeeho62 = TailingDisplayProfile(width: 1024, height: 480, isZeeho: true)
@@ -336,7 +353,7 @@ enum Zeeho62Legacy {
     final class TailingConnection: @unchecked Sendable {
         private let localIP: String
         private var targetIP: String
-        private var profile: TailingDisplayProfile
+        private let profile: TailingDisplayProfile
         private let phone: TailingPhoneInfo
         private let ports: TailingPorts
         private let identityProvider: () throws -> TailingIdentity
@@ -355,12 +372,6 @@ enum Zeeho62Legacy {
         private var sentH264Prefix = false
         private var mediaStarted = false
         private var configured = false
-        private var negotiatedSize: InstrumentFrameSize?
-        /// 仪表在媒体配置里上报的编码尺寸（1024×480 或 1024×600 等）。
-        var mediaSize: InstrumentFrameSize? {
-            condition.lock(); defer { condition.unlock() }
-            return negotiatedSize
-        }
         private var isZeeho: Bool { profile.isZeeho }
         private var dashboard: String { profile.isZeeho ? "极核" : "台铃" }
 
@@ -369,24 +380,6 @@ enum Zeeho62Legacy {
              log: @escaping (String) -> Void) {
             self.localIP = localIP; self.targetIP = targetIP; self.profile = profile; self.phone = phone
             self.ports = ports; self.identityProvider = identityProvider; self.log = log
-        }
-
-        /// 注册通道（10930）偶发 errno 65/61，重试 3 次再报错，避免热点刚起时直接失败。
-        private func connectAnnouncement(localIP: String, targetIP: String, port: UInt16) throws -> TailingSocket {
-            var lastError: Error?
-            for attempt in 1...3 {
-                let socket = try tracked(TailingSocket.create())
-                do {
-                    try socket.connect(localIP: localIP, remoteIP: targetIP, port: port, timeout: 4)
-                    return socket
-                } catch {
-                    socket.close()
-                    lastError = error
-                    log("\(dashboard) 连接 \(targetIP):\(port) 第 \(attempt) 次失败：\(error.localizedDescription)")
-                    if attempt < 3 { Thread.sleep(forTimeInterval: 0.8) }
-                }
-            }
-            throw lastError ?? TailingError.timeout("连接仪表注册通道 \(port)")
         }
 
         func start() throws {
@@ -415,7 +408,8 @@ enum Zeeho62Legacy {
             let announcement: TailingSocket
             if let discoveredSocket { announcement = discoveredSocket }
             else {
-                announcement = try connectAnnouncement(localIP: localIP, targetIP: targetIP, port: ports.announcement)
+                announcement = try tracked(TailingSocket.create())
+                try announcement.connect(localIP: localIP, remoteIP: targetIP, port: ports.announcement)
             }
             defer { announcement.close() }
             try announcement.write(TailingProtocol.control(0x70000010, payload: TailingProtocol.json([
@@ -710,16 +704,10 @@ enum Zeeho62Legacy {
                     guard request.payload.count >= 32 else {
                         throw TailingError.protocolFailure("媒体配置载荷不足 32 字节")
                     }
-                    let width = Int(request.payload.uint16LE(0))
-                    let height = Int(request.payload.uint16LE(2))
-                    // 极核 6.2 寸有 1024×480 和 1024×600 两种面板，按仪表上报的尺寸自适应编码。
-                    let validDimensions: Bool
-                    if isZeeho {
-                        validDimensions = (480...1280).contains(width) && (240...800).contains(height)
-                            && width.isMultiple(of: 2) && height.isMultiple(of: 2)
-                    } else {
-                        validDimensions = width == 480 && height == 272
-                    }
+                    let width = request.payload.uint16LE(0)
+                    let height = request.payload.uint16LE(2)
+                    let validDimensions = isZeeho ? width == 1024 && (height == 480 || height == 488)
+                        : width == 480 && height == 272
                     guard validDimensions else {
                         throw TailingError.protocolFailure("仪表媒体尺寸 \(width)×\(height) 与 \(dashboard) 配置不符")
                     }
@@ -734,15 +722,6 @@ enum Zeeho62Legacy {
                           let echoed = Data(base64Encoded: request.payload.dropFirst(32), options: .ignoreUnknownCharacters),
                           echoed == signature else { throw TailingError.protocolFailure("媒体身份回显不匹配") }
                     try identity.verify(echoed, huid: huid)
-                    condition.lock()
-                    if mediaStarted, negotiatedSize != nil,
-                       negotiatedSize?.width != width || negotiatedSize?.height != height {
-                        condition.unlock()
-                        throw TailingError.protocolFailure("仪表已改为 \(width)×\(height)，请重新连接以切换编码尺寸")
-                    }
-                    profile.width = width; profile.height = height
-                    negotiatedSize = InstrumentFrameSize(width: width, height: height)
-                    condition.unlock()
                     payload.appendLE(UInt32(isZeeho ? 2 : 1))
                     payload.appendLE(UInt16(profile.width))
                     payload.appendLE(UInt16(profile.height))
@@ -889,21 +868,7 @@ enum Zeeho62Legacy {
             case .timeout(let text): return "台铃等待超时：\(text)"
             case .closed: return "台铃会话已关闭"
             case .channel(let name, let error): return "\(name)：\(error.localizedDescription)"
-            case .system(let text, let code): return "台铃\(text)失败（\(code)）：\(TailingError.hint(code))"
-            }
-        }
-
-        private static func hint(_ code: Int32) -> String {
-            switch code {
-            case 61: return "连接被拒绝，仪表没在监听该端口"
-            case 65: return "仪表不可达（无路由），请确认 iPhone 连的是仪表热点、IP 同网段"
-            case 51: return "网络不可达，Wi-Fi 可能刚断开"
-            case 60: return "连接超时，仪表可能仍在官方投屏"
-            case 49: return "本机地址不可用，Wi-Fi 正在切换"
-            case 64: return "仪表已下线"
-            case 56: return "连接被重置，请重开仪表投屏"
-            case 9: return "套接字无效"
-            default: return "系统错误"
+            case .system(let text, let code): return "台铃\(text)失败（\(code)）"
             }
         }
     }
